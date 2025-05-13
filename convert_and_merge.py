@@ -17,7 +17,7 @@ for src, xlsx in sources.items():
         df["fluid"]  = sheet[:31]
         fn = f"{src}_{sheet.replace(' ', '_')}.csv"
         df.to_csv(fn, index=False)
-        print(f"Wrote {fn}")
+        # print(f"Wrote {fn}")
 
 # 2) Merge all those CSVs into a single DataFrame
 csv_files = glob.glob("*_*.csv")
