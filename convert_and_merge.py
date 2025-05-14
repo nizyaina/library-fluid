@@ -1,4 +1,4 @@
-#!/usr/bin/env python3 
+#!/usr/bin/env python3
 import glob
 import pandas as pd
 
@@ -17,7 +17,7 @@ for src, xlsx in sources.items():
         df["fluid"]  = sheet[:31]
         fn = f"{src}_{sheet.replace(' ', '_')}.csv"
         df.to_csv(fn, index=False)
-        print(f"Wrote {fn}") #print for confirmation 
+        print(f"Wrote {fn}")
 
 # 2) Merge all those CSVs into a single DataFrame
 csv_files = glob.glob("*_*.csv")
@@ -50,4 +50,4 @@ master = master.rename(columns=rename_map)
 
 # 5) **No trimming** — keep every column from the merge
 master.to_csv("master_fluid_table.csv", index=False)
-print("Done! Master table shape:", master.shape) 
+print("Done! Master table shape:", master.shape)
