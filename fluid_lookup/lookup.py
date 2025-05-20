@@ -1,57 +1,65 @@
-#!/usr/bin/env python3
-import glob
 import pandas as pd
+import numpy as np
+from scipy.interpolate import RegularGridInterpolator
 
-# 1) Convert every sheet in each Excel workbook into per‐sheet CSV
-sources = {
-    "coolprop":   "coolpropdata.xlsx",
-    "thermopack": "thermopackdata.xlsx",
-    "pykingas":   "pykingasdata.xlsx",
-}
+class FluidLibrary:
+    def __init__(self, csv_path="master_fluid_table.csv"):
+        df = pd.read_csv(csv_path, low_memory=False)
+        df.columns = [
+            c.strip().lower()
+              .replace(" ", "_")
+              .replace("(", "").replace(")", "")
+              .replace("/", "_")
+              .replace(".", "_")
+            for c in df.columns
+        ]
+        self.df = df
+        self._cache = {}
 
-for src, xlsx in sources.items():
-    xls = pd.ExcelFile(xlsx)
-    for sheet in xls.sheet_names:
-        df = xls.parse(sheet_name=sheet)
-        df["source"] = src
-        df["fluid"]  = sheet[:31]
-        fn = f"{src}_{sheet.replace(' ', '_')}.csv"
-        df.to_csv(fn, index=False)
+    def available_fluids(self):
+        return sorted(self.df['fluid'].unique())
 
-# 2) Merge all those CSVs into a single DataFrame
-csv_files = glob.glob("*_*.csv")
-master = pd.concat([pd.read_csv(f, low_memory=False) for f in csv_files],
-                   ignore_index=True)
+    def available_properties(self, fluid):
+        if fluid not in self.available_fluids():
+            raise KeyError(f"No such fluid '{fluid}'")
+        return sorted(c for c in self.df.columns if c not in ('fluid','source','t','p'))
 
-# 3) (Optional) normalize column names
-master.columns = [
-    c.strip()
-     .lower()
-     .replace(" ", "_")
-     .replace("[", "")
-     .replace("]", "")
-     .replace("(", "")
-     .replace(")", "")
-    for c in master.columns
-]
+    def _build_interp(self, fluid, prop):
+        key = (fluid, prop)
+        if key in self._cache:
+            return self._cache[key]
 
-# 4) rename temperature and pressure
-def find_col(kw):
-    for c in master.columns:
-        if kw in c:
-            return c
-    raise KeyError(kw)
+        grp = (self.df[self.df['fluid']==fluid]
+               .dropna(subset=['t','p', prop]))
+        Ts = np.sort(grp['t'].unique())
+        Ps = np.sort(grp['p'].unique())
+        if len(Ts)<2 or len(Ps)<2:
+            self._cache[key] = None
+            return None
 
-master = master.rename(columns={
-    find_col("temp"):  "t",
-    find_col("press"): "p",
-})
+        pivot = (grp.set_index(['t','p'])[prop]
+                    .unstack('p')
+                    .reindex(index=Ts, columns=Ps)
+                    .astype(float))
+        interp = RegularGridInterpolator((Ts, Ps), pivot.values,
+                                         bounds_error=False,
+                                         fill_value=np.nan)
+        self._cache[key] = interp
+        return interp
 
-# ── NEW: detect whatever Cp column exists and rename it to "cp" ──
-cp_candidates = [c for c in master.columns if "cp" in c and c not in ("cp0","cp1")]
-if cp_candidates:
-    master = master.rename(columns={cp_candidates[0]: "cp"})
+    def query(self, fluid, T, P, props=None):
+        if fluid not in self.available_fluids():
+            raise KeyError(f"No such fluid '{fluid}'")
+        if props is None:
+            props = self.available_properties(fluid)
 
-# 5) Write your master table (complete, no trimming)
-master.to_csv("master_fluid_table.csv", index=False)
-print("Done! Master table shape:", master.shape)
+        out = {}
+        pt = (float(T), float(P))
+        for prop in props:
+            fn = self._build_interp(fluid, prop)
+            if fn is None:
+                out[prop] = "n/a"
+            else:
+                val = fn(pt)
+                out[prop] = float(val) if not np.isnan(val) else "n/a"
+        return out
