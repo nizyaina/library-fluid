@@ -1,68 +1,57 @@
+#!/usr/bin/env python3
+import glob
 import pandas as pd
-import numpy as np
-from scipy.interpolate import RegularGridInterpolator
 
-class FluidLookup:
-    # define source priority
-    _priority = {"coolprop": 0, "thermopack": 1, "pykingas": 2}
+# 1) Convert every sheet in each Excel workbook into per‐sheet CSV
+sources = {
+    "coolprop":   "coolpropdata.xlsx",
+    "thermopack": "thermopackdata.xlsx",
+    "pykingas":   "pykingasdata.xlsx",
+}
 
-    def __init__(self, csv_path="master_fluid_table.csv"):
-        # read in one go
-        df = pd.read_csv(csv_path, low_memory=False)
-        self._interps = {}
+for src, xlsx in sources.items():
+    xls = pd.ExcelFile(xlsx)
+    for sheet in xls.sheet_names:
+        df = xls.parse(sheet_name=sheet)
+        df["source"] = src
+        df["fluid"]  = sheet[:31]
+        fn = f"{src}_{sheet.replace(' ', '_')}.csv"
+        df.to_csv(fn, index=False)
 
-        for fluid, grp in df.groupby("fluid"):
-            # 1) Clean & sort T and P
-            Ts = np.array(sorted(grp["T"].dropna().astype(float).unique()))
-            Ps = np.array(sorted(grp["P"].dropna().astype(float).unique()))
-            # skip fluids without a full 2D grid
-            if len(Ts) < 2 or len(Ps) < 2:
-                continue
-            pts = (Ts, Ps)
+# 2) Merge all those CSVs into a single DataFrame
+csv_files = glob.glob("*_*.csv")
+master = pd.concat([pd.read_csv(f, low_memory=False) for f in csv_files],
+                   ignore_index=True)
 
-            # 2) find numeric properties
-            props = [
-                c for c in grp.columns
-                if c not in ("fluid", "source", "T", "P")
-                and pd.api.types.is_numeric_dtype(grp[c])
-            ]
+# 3) (Optional) normalize column names
+master.columns = [
+    c.strip()
+     .lower()
+     .replace(" ", "_")
+     .replace("[", "")
+     .replace("]", "")
+     .replace("(", "")
+     .replace(")", "")
+    for c in master.columns
+]
 
-            interp_dict = {}
-            for prop in props:
-                # prepare empty grid
-                grid = np.full((len(Ts), len(Ps)), np.nan, dtype=float)
+# 4) rename temperature and pressure
+def find_col(kw):
+    for c in master.columns:
+        if kw in c:
+            return c
+    raise KeyError(kw)
 
-                # fill by priority
-                for i, Tval in enumerate(Ts):
-                    for j, Pval in enumerate(Ps):
-                        sub = grp[
-                            (grp["T"].astype(float) == Tval) &
-                            (grp["P"].astype(float) == Pval) &
-                            grp[prop].notna()
-                        ]
-                        if sub.empty:
-                            continue
-                        ranks = sub["source"].map(self._priority).values
-                        best = sub.iloc[ranks.argmin()]
-                        grid[i, j] = float(best[prop])
+master = master.rename(columns={
+    find_col("temp"):  "t",
+    find_col("press"): "p",
+})
 
-                # build interpolator
-                interp_dict[prop] = RegularGridInterpolator(
-                    pts, grid, bounds_error=False, fill_value=np.nan
-                )
+# ── NEW: detect whatever Cp column exists and rename it to "cp" ──
+cp_candidates = [c for c in master.columns if "cp" in c and c not in ("cp0","cp1")]
+if cp_candidates:
+    master = master.rename(columns={cp_candidates[0]: "cp"})
 
-            self._interps[fluid] = interp_dict
-
-    def list_variables(self, fluid=None):
-        if fluid:
-            return sorted(self._interps.get(fluid, {}).keys())
-        keys = set()
-        for d in self._interps.values():
-            keys.update(d.keys())
-        return sorted(keys)
-
-    def query(self, fluid, T, P):
-        if fluid not in self._interps:
-            raise KeyError(f"Fluid '{fluid}' not found or has insufficient grid.")
-        pt = np.array([float(T), float(P)])
-        return {prop: float(fn(pt)) for prop, fn in self._interps[fluid].items()}
+# 5) Write your master table (complete, no trimming)
+master.to_csv("master_fluid_table.csv", index=False)
+print("Done! Master table shape:", master.shape)
