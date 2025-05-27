@@ -5,13 +5,15 @@ from scipy.interpolate import RegularGridInterpolator
 class FluidLibrary:
     """
     FluidLibrary provides interpolation-based lookup for fluid properties.
-    
+
     Key features:
-    1. Case-insensitive fluid names + simple synonyms (e.g. “H2O” → “water”).
-    2. Only exposes the properties you specified; everything else returns 'n/a'.
-    3. Recognizes column names with units (e.g., 'density_kg_m3') by matching prefixes.
-    4. Builds & caches a SciPy RegularGridInterpolator for each (fluid, property).
-    5. Query API returns a Python dict of {property: value or 'n/a'}.
+      1. Case-insensitive fluid names + simple synonyms (e.g. “H2O” → “water”).
+      2. Only exposes the properties you specified; everything else returns 'n/a'.
+      3. Recognizes column names with units (e.g., 'density_kg_m3') by matching
+         prefixes against ALLOWED_PROPERTIES.
+      4. Builds & caches a SciPy RegularGridInterpolator for each (fluid, property).
+      5. Enforces that queried T/P lie within the data bounds, raising ValueError otherwise.
+      6. Query API returns a Python dict of {property: value or 'n/a'}.
     """
 
     # 1) Define exactly which properties you want visible to users
@@ -42,7 +44,7 @@ class FluidLibrary:
     SYNONYMS = {
         'h2o': 'water',
         'water': 'water',
-        # add more as needed, e.g. 'steam': 'water'
+        # add more as needed
     }
 
     def __init__(self, csv_path="master_fluid_table.csv"):
@@ -51,8 +53,7 @@ class FluidLibrary:
         df.columns = [
             c.strip().lower()
              .replace(' ', '_')
-             .replace('(', '')
-             .replace(')', '')
+             .replace('(', '').replace(')', '')
              .replace('/', '_')
              .replace('.', '_')
             for c in df.columns
@@ -61,6 +62,7 @@ class FluidLibrary:
         self._cache = {}
 
         # 4) Map canonical column names for each allowed property
+        #    Match exact prop or prop_*
         self._prop_map = {}
         for prop in self.ALLOWED_PROPERTIES:
             matches = [c for c in df.columns if c == prop or c.startswith(prop + '_')]
@@ -72,6 +74,17 @@ class FluidLibrary:
         self._aliases = {f.lower(): f for f in fluids}
         for alias, canon in self.SYNONYMS.items():
             self._aliases[alias.lower()] = canon
+
+        # 6) Precompute valid T/P bounds per fluid for range‐checking
+        self._ranges = {}
+        for f in self.available_fluids():
+            sub = self.df[self.df['fluid'] == f]
+            self._ranges[f] = {
+                't_min': sub['t'].min(),
+                't_max': sub['t'].max(),
+                'p_min': sub['p'].min(),
+                'p_max': sub['p'].max(),
+            }
 
     def _canonical_fluid(self, fluid):
         """
@@ -107,7 +120,10 @@ class FluidLibrary:
             self._cache[key] = None
             return None
 
-        grp = self.df[self.df['fluid'] == fluid].dropna(subset=['t', 'p', col])
+        grp = (
+            self.df[self.df['fluid'] == fluid]
+               .dropna(subset=['t', 'p', col])
+        )
         Ts = np.sort(grp['t'].unique())
         Ps = np.sort(grp['p'].unique())
         if len(Ts) < 2 or len(Ps) < 2:
@@ -131,10 +147,26 @@ class FluidLibrary:
     def query(self, fluid, T, P, props=None):
         """
         Query one or more properties at (T, P).
-        Returns dict {property: value or 'n/a'}.
+
+        Raises ValueError if (T,P) lies outside the data bounds for that fluid.
+        Returns dict {property: float value or 'n/a'}.
         """
         canon = self._canonical_fluid(fluid)
 
+        # Enforce in‐range checks
+        r = self._ranges[canon]
+        if not (r['t_min'] <= T <= r['t_max']):
+            raise ValueError(
+                f"Temperature {T} K is outside valid range "
+                f"{r['t_min']}–{r['t_max']} K for {canon}"
+            )
+        if not (r['p_min'] <= P <= r['p_max']):
+            raise ValueError(
+                f"Pressure {P} Pa is outside valid range "
+                f"{r['p_min']}–{r['p_max']} Pa for {canon}"
+            )
+
+        # Determine props to query
         if props is None:
             props = list(self._prop_map.keys())
         props = [p for p in props if p in self._prop_map]
