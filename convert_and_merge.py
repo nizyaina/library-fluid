@@ -54,7 +54,7 @@ def normalize_and_rename(df: pd.DataFrame) -> pd.DataFrame:
 
     # c) Rename pressure → 'p'
     for c in df.columns:
-        if c in ("p_pa", "pressure") or "press" in c:'press' in c:
+        if c in ("p_pa", "pressure") or "press" in c:
             df = df.rename(columns={c: 'p'})
             break
 
