@@ -55,7 +55,7 @@ class FluidLibrary:
 
         self._ranges = {}
         for f in self.available_fluids():
-            sub = self.df[self.df['fluid'] == f]
+            sub = self.df[self.df['fluid'].str.lower() == f.lower()]
             self._ranges[f] = {
                 't_min': sub['t'].min(),
                 't_max': sub['t'].max(),
